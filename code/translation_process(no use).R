@@ -15,7 +15,7 @@ gu_translation <- c(
 )
 Seoul_info$gu <- gu_translation[Seoul_info$gu]
 
-# Define a named vector to map the first 100 Korean dong names to English with underscores
+# Define a named vector to map the Korean dong names to English with underscores
 dong_translation <- c(
   "사직동" = "Sajik", "삼청동" = "Samcheong", "부암동" = "Buam", "평창동" = "Pyeongchang", 
   "무악동" = "Muwak", "교남동" = "Gyonam", "가회동" = "Gahoe", "종로1·2·3·4가동" = "Jongno1_2_3_4Ga", 
