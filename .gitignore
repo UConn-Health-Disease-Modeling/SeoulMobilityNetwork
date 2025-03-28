@@ -29,4 +29,6 @@ code/*.mexw64
 
 .Rhistory
 
-.DS_Store
+**/.DS_Store
+.RData
+.gitignore
