@@ -13,6 +13,8 @@ library(tidyr)
 library(sf)
 library(ggplot2)
 library(geojsonio)
+library(readr)
+library(writexl)
 ```
 
 ## Read data
@@ -37,63 +39,95 @@ V(g)$business <- nodes$business[match(V(g)$name, nodes$node)]
 adjmatrix <- as_adjacency_matrix(g, sparse = FALSE, attr = "weight")
 adjnull <- `rownames<-`(`colnames<-`(adjmatrix, NULL), NULL)
 ```
-
 ## density Table 1.
-```{r}
+```{r echo=FALSE}
 # Set data directory
 data_dir <- "../data/"
-
-# Set the years to process
 years <- 2020:2022
-file_list <- paste0(data_dir, "network_", years, ".csv")  # File paths for each year
+file_list <- paste0(data_dir, "network_", years, ".csv")
 
 # Read node information
 nodes <- read.csv("../data/Seoul_node_info.csv")
 node_to_gu <- setNames(nodes$gu, nodes$node)
 
+# Count number of nodes per gu
+gu_node_counts <- table(nodes$gu)
+total_nodes <- sum(gu_node_counts)
+
 # Initialize result lists
 within_density_list <- list()
 across_density_list <- list()
+overall_density_list <- list()  # ← new
 
-# Process data for each year
+# Loop over each year
 for (i in seq_along(file_list)) {
   file_path <- file_list[i]
-  file_year <- as.character(years[i])  # Extract year, e.g., "2020"
-
+  file_year <- as.character(years[i])
+  
   if (!file.exists(file_path)) {
     message("File not found: ", file_path)
-    next  # Skip missing files
+    next
   }
   
   # Read network data
   network_data <- read.csv(file_path)
-  
-  # Add gu information
   network_data$source_gu <- node_to_gu[as.character(network_data$source)]
   network_data$target_gu <- node_to_gu[as.character(network_data$target)]
   
-  # Calculate within_density (connection strength within the same gu)
+  ### ----- 1. Per-gu within density -----
   within_density <- network_data %>%
     filter(source_gu == target_gu) %>%
     group_by(source_gu) %>%
-    summarise(value = sum(strength, na.rm = TRUE)) %>%
+    summarise(weight_sum = sum(strength, na.rm = TRUE)) %>%
     rename(gu = source_gu) %>%
-    mutate(year = file_year)  # Add year
+    mutate(n = as.numeric(gu_node_counts[gu]),
+           denom = n * n,
+           value = weight_sum / denom,
+           year = file_year) %>%
+    select(gu, value, year)
   
-  # Calculate across_density (connection strength between different gu)
+  ### ----- 2. Per-gu across density -----
   across_density <- network_data %>%
     filter(source_gu != target_gu) %>%
     pivot_longer(cols = c(source_gu, target_gu), values_to = "gu") %>%
     group_by(gu) %>%
-    summarise(value = sum(strength, na.rm = TRUE)) %>%
-    mutate(year = file_year)  # Add year
+    summarise(weight_sum = sum(strength, na.rm = TRUE)) %>%
+    mutate(n = as.numeric(gu_node_counts[gu]),
+           denom = 2 * n * (total_nodes - n),
+           value = weight_sum / denom,
+           year = file_year) %>%
+    select(gu, value, year)
   
-  # Store in the list
+  ### ----- 3. Overall network-level within & across density -----
+  # 分子
+  within_total <- network_data %>%
+    filter(source_gu == target_gu) %>%
+    summarise(weight_sum = sum(strength, na.rm = TRUE)) %>%
+    pull(weight_sum)
+  
+  across_total <- network_data %>%
+    filter(source_gu != target_gu) %>%
+    summarise(weight_sum = sum(strength, na.rm = TRUE)) %>%
+    pull(weight_sum)
+  
+  # 分母
+  denom_within <- sum(as.numeric(gu_node_counts)^2)
+  denom_across <- sum(as.numeric(gu_node_counts) * (total_nodes - as.numeric(gu_node_counts)))
+  
+  # density
+  overall_density <- data.frame(
+    year = file_year,
+    type = c("within", "across"),
+    value = c(within_total / denom_within, across_total / denom_across)
+  )
+  
+  # Store results
   within_density_list[[file_year]] <- within_density
   across_density_list[[file_year]] <- across_density
+  overall_density_list[[file_year]] <- overall_density
 }
 
-# Combine data from all years
+# Combine and reshape per-gu densities
 within_density_df <- bind_rows(within_density_list) %>%
   pivot_wider(names_from = year, values_from = value, values_fill = 0) %>%
   arrange(gu)
@@ -102,10 +136,101 @@ across_density_df <- bind_rows(across_density_list) %>%
   pivot_wider(names_from = year, values_from = value, values_fill = 0) %>%
   arrange(gu)
 
-# Save as Excel files
-#write_xlsx(within_density_df, "../result/Table 1(a). Within_density.xlsx")
-#write_xlsx(across_density_df, "../result/Table 1(b). Across_density.xlsx")
+# Combine overall network-level densities
+overall_density_df <- bind_rows(overall_density_list) %>%
+  pivot_wider(names_from = year, values_from = value)
+
+
+# ----- 1. Prepare basic information -----
+
+# Define the order of gu names based on existing gu_node_counts
+gu_order <- names(gu_node_counts)
+
+# Summarize population for each gu (district) by aggregating from nodes table
+pop_by_gu <- nodes %>%
+  group_by(gu) %>%
+  summarise(population = sum(population, na.rm = TRUE)) %>%
+  filter(gu %in% gu_order) %>%
+  mutate(gu = factor(gu, levels = gu_order)) %>%
+  arrange(gu)
+
+# Number of dongs (sub-districts) per gu
+dong_count <- data.frame(
+  gu = gu_order,
+  number_of_dongs = as.numeric(gu_node_counts)
+)
+
+# Merge population and dong counts
+base_info <- left_join(pop_by_gu, dong_count, by = "gu")
+
+# ----- 2. Merge per-gu within and across density -----
+
+# Reshape wide → long format: columns are gu, year, density values
+within_density_df_long <- within_density_df %>%
+  pivot_longer(-gu, names_to = "year", values_to = "within")
+
+across_density_df_long <- across_density_df %>%
+  pivot_longer(-gu, names_to = "year", values_to = "across")
+
+# Merge within and across together for each gu-year
+density_all <- left_join(within_density_df_long, across_density_df_long, by = c("gu", "year"))
+
+# Reshape long → wide format: separate columns for each year's within/across
+density_wide <- density_all %>%
+  pivot_wider(names_from = year, values_from = c(within, across), names_sep = "_")
+
+# Merge with population and dong count
+gu_summary <- left_join(base_info, density_wide, by = "gu")
+
+# ----- 3. Create the "Total" row (for entire network) -----
+
+total_row <- data.frame(
+  gu = "Total",
+  population = sum(gu_summary$population, na.rm = TRUE),
+  number_of_dongs = sum(gu_summary$number_of_dongs),
+  within_2020 = overall_density_df %>% filter(type == "within") %>% pull(`2020`),
+  within_2021 = overall_density_df %>% filter(type == "within") %>% pull(`2021`),
+  within_2022 = overall_density_df %>% filter(type == "within") %>% pull(`2022`),
+  across_2020 = overall_density_df %>% filter(type == "across") %>% pull(`2020`),
+  across_2021 = overall_density_df %>% filter(type == "across") %>% pull(`2021`),
+  across_2022 = overall_density_df %>% filter(type == "across") %>% pull(`2022`)
+)
+
+# ----- 4. Combine all and finalize output -----
+
+# Bind per-gu summary with the Total row
+final_table <- bind_rows(gu_summary, total_row)
+# reorder based on population
+final_table <- final_table %>%
+  filter(gu != "Total") %>%
+  arrange(desc(population)) %>%
+  bind_rows(filter(final_table, gu == "Total"))
+### get final table for paper
+# Step 1: divide population by 1000
+final_table$population <- final_table$population / 1000
+
+# Step 2: define columns to process
+target_cols <- c("within_2020", "within_2021", "within_2022",
+                 "across_2020", "across_2021", "across_2022")
+
+# Step 3: extract total values for each column (last row of table)
+total_row <- final_table[final_table$gu == "Total", target_cols]
+
+# Step 4: loop and replace each target column
+for (col in target_cols) {
+  base_val <- as.numeric(total_row[[col]])
+  final_table[[col]] <- sapply(final_table[[col]], function(x) {
+    if (is.na(x)) return("")
+    val_int <- round(x)
+    ratio <- round(x / base_val, 2)
+    paste0(val_int, " (", sprintf("%.2f", ratio), ")")
+  })
+}
+
+writexl::write_xlsx(final_table, "../result/Table 1. Within_Across weighted mobility densities in Seoul (2020–2022).xlsx")
 ```
+
+
 
 ## community detection
 ```{r echo=FALSE}
