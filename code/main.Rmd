@@ -84,7 +84,7 @@ for (i in seq_along(file_list)) {
            denom = n * n,
            value = weight_sum / denom,
            year = file_year) %>%
-    select(gu, value, year)
+    dplyr::select(gu, value, year)
   
   ### ----- 2. Per-gu across density -----
   across_density <- network_data %>%
@@ -96,7 +96,7 @@ for (i in seq_along(file_list)) {
            denom = 2 * n * (total_nodes - n),
            value = weight_sum / denom,
            year = file_year) %>%
-    select(gu, value, year)
+    dplyr::select(gu, value, year)
   
   ### ----- 3. Overall network-level within & across density -----
   # 分子
@@ -227,7 +227,7 @@ for (col in target_cols) {
   })
 }
 
-writexl::write_xlsx(final_table, "../result/Table 1. Within_Across weighted mobility densities in Seoul (2020–2022).xlsx")
+# writexl::write_xlsx(final_table, "../result/Table 1. Within_Across weighted mobility densities in Seoul (2020–2022).xlsx")
 ```
 
 
@@ -715,129 +715,186 @@ Size vs Total Population: 0.9863117
 Size vs Total Business: 0.9497816 
 Size vs Total Poverty: 0.8082276 
 
-## Appendix. Figrue S1
+## by month mobility Figure S1
 ```{r echo=FALSE}
-# Set data directory
 data_dir <- "../data/monthly/"
 
-# Generate file names for all months from 2020 to 2022
 years <- 2020:2022
 months <- sprintf("%02d", 1:12)  # 01, 02, ..., 12
 file_dates <- as.vector(outer(years, months, paste0))  # 202001, 202002, ..., 202212
-file_list <- paste0(data_dir, "network_", file_dates, ".csv")  # Full file paths
+file_list <- paste0(data_dir, "network_", file_dates, ".csv")  
 
-# Read node information
 nodes <- read.csv("../data/Seoul_node_info.csv")
 node_to_gu <- setNames(nodes$gu, nodes$node)
 
-# Initialize result lists
-within_density_list <- list()
-across_density_list <- list()
+within_mobility_list <- list()
+across_mobility_list <- list()
 
-# Process each file
 for (i in seq_along(file_list)) {
   file_path <- file_list[i]
-  file_date <- file_dates[i]  # Extract date, e.g., "202001"
-
+  file_date <- file_dates[i]  
+  
   if (!file.exists(file_path)) {
     message("File not found: ", file_path)
-    next  # Skip missing files
+    next  
   }
   
-  # Read network data
+  
   network_data <- read.csv(file_path)
   
-  # Add gu information
+  
   network_data$source_gu <- node_to_gu[as.character(network_data$source)]
   network_data$target_gu <- node_to_gu[as.character(network_data$target)]
   
-  # Calculate within_density
-  within_density <- network_data %>%
+  
+  within_mobility <- network_data %>%
     filter(source_gu == target_gu) %>%
     group_by(source_gu) %>%
     summarise(value = sum(strength, na.rm = TRUE)) %>%
     rename(gu = source_gu) %>%
     mutate(date = file_date)
   
-  # Calculate across_density
-  across_density <- network_data %>%
+  
+  across_mobility <- network_data %>%
     filter(source_gu != target_gu) %>%
     pivot_longer(cols = c(source_gu, target_gu), values_to = "gu") %>%
     group_by(gu) %>%
     summarise(value = sum(strength, na.rm = TRUE)) %>%
     mutate(date = file_date)
   
-  # Store in lists
-  within_density_list[[file_date]] <- within_density
-  across_density_list[[file_date]] <- across_density
+  
+  within_mobility_list[[file_date]] <- within_mobility
+  across_mobility_list[[file_date]] <- across_mobility
 }
 
-# Combine all time points
-within_density_df <- bind_rows(within_density_list) %>%
+within_mobility_df <- bind_rows(within_mobility_list) %>%
   pivot_wider(names_from = date, values_from = value, values_fill = 0) %>%
   arrange(gu)
 
-across_density_df <- bind_rows(across_density_list) %>%
+across_mobility_df <- bind_rows(across_mobility_list) %>%
   pivot_wider(names_from = date, values_from = value, values_fill = 0) %>%
   arrange(gu)
 
-# Extract and sort column names
-correct_order <- c("gu", sort(setdiff(colnames(within_density_df), "gu")))
+correct_order <- c("gu", sort(setdiff(colnames(within_mobility_df), "gu")))
 
-# Reorder columns
-within_density_df <- within_density_df[, correct_order]
-across_density_df <- across_density_df[, correct_order]
+within_mobility_df <- within_mobility_df[, correct_order]
+across_mobility_df <- across_mobility_df[, correct_order]
 
-# Reshape to long format
-within_density_long <- within_density_df %>%
-  pivot_longer(cols = -gu, names_to = "date", values_to = "within_density")
+within_mobility_long <- within_mobility_df %>%
+  pivot_longer(cols = -gu, names_to = "date", values_to = "within_mobility")
 
-across_density_long <- across_density_df %>%
-  pivot_longer(cols = -gu, names_to = "date", values_to = "across_density")
+across_mobility_long <- across_mobility_df %>%
+  pivot_longer(cols = -gu, names_to = "date", values_to = "across_mobility")
 
-# Convert date format to Year-Month (YYYY-MM)
-within_density_long$date <- format(as.Date(paste0(within_density_long$date, "01"), format="%Y%m%d"), "%Y-%m")
-across_density_long$date <- format(as.Date(paste0(across_density_long$date, "01"), format="%Y%m%d"), "%Y-%m")
+within_mobility_long$date <- format(as.Date(paste0(within_mobility_long$date, "01"), format="%Y%m%d"), "%Y-%m")
+across_mobility_long$date <- format(as.Date(paste0(across_mobility_long$date, "01"), format="%Y%m%d"), "%Y-%m")
 
-# Ensure date is a factor and ordered chronologically
-within_density_long$date <- factor(within_density_long$date, levels = unique(within_density_long$date))
-across_density_long$date <- factor(across_density_long$date, levels = unique(across_density_long$date))
+within_mobility_long$date <- factor(within_mobility_long$date, levels = unique(within_mobility_long$date))
+across_mobility_long$date <- factor(across_mobility_long$date, levels = unique(across_mobility_long$date))
 
-# Add labels
-within_density_long$variable <- "Within"
-across_density_long$variable <- "Across"
+within_mobility_long$variable <- "Within"
+across_mobility_long$variable <- "Across"
 
-# Convert to millions
-within_density_long <- within_density_long %>% mutate(density = within_density / 1e6)
-across_density_long <- across_density_long %>% mutate(density = across_density / 1e6)
+within_mobility_long <- within_mobility_long %>% mutate(mobility = within_mobility / 1e6)
+across_mobility_long <- across_mobility_long %>% mutate(mobility = across_mobility / 1e6)
 
-# Combine datasets
-density_data <- bind_rows(within_density_long, across_density_long)
+mobility_data <- bind_rows(within_mobility_long, across_mobility_long)
 
-density_data$variable <- factor(density_data$variable, levels = c("Within", "Across"))
+mobility_data$variable <- factor(mobility_data$variable, levels = c("Within", "Across"))
 
-# Plot
-WA_25gu <- ggplot(density_data, aes(x = date, y = density, color = gu, group = gu)) +
+WA_25gu <- ggplot(mobility_data, aes(x = date, y = mobility, color = gu, group = gu)) +
   geom_line() +
-  facet_grid(. ~ variable, scales = "fixed") +  # Facet horizontally by 'variable'
-  labs(x = "Year-Month", y = "Density (in million)") +
+  facet_grid(. ~ variable, scales = "fixed") +  
+  labs(x = "Year-Month", y = "Mobility (in million)") +
   theme_minimal(base_size = 14) +
   theme(
-    panel.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),  
     plot.background = element_rect(fill = "white", color = NA),
     strip.background = element_rect(fill = "grey80"),
     strip.text = element_text(size = 14, face = "bold"),
     panel.grid.major = element_line(color = "grey80"),
     panel.grid.minor = element_blank(),
-    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),  # Rotate date labels
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
     axis.text = element_text(color = "black"),
     axis.title.y = element_text(size = 16)
   )
+#ggsave("../result/Figure S1. density.png", WA_25gu, width = 15, height = 8, dpi = 300, bg = "white")
 
-ggsave("../result/Figure S1. WA_25gu.png", WA_25gu, width = 15, height = 8, dpi = 300, bg = "white")
 ```
 
-## Appendix. Figure S2
+
+## Appendix Figrue S2.(A)
+```{r echo=FALSE}
+# Compute label positions as centroids of each GU area
+gu_labels <- seoul_map_11 %>%
+  group_by(gu.y) %>%
+  summarise(geometry = st_union(geometry)) %>%
+  st_centroid()
+
+# Plot GU boundaries with labels and light gray background
+figure_gu_label <- ggplot() +
+  # Light gray fill for GU areas to distinguish from white background
+  geom_sf(data = gu_boundaries, fill = "gray95", color = "black", size = 0.8) +
+  # Add one label per GU in the center
+  geom_sf_text(data = gu_labels, aes(label = gu.y), size = 5, fontface = "bold", color = "black") +
+  # Clean, minimal theme with visible border and grid
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, size = 1),   # Black frame border
+    panel.grid = element_line(color = "grey90"),                         # Lat/lon gridlines
+    axis.text = element_text(color = "black", size = 12),                # Axis ticks
+    axis.title = element_blank(),                                        # No axis title
+    legend.position = "none",                                            # No legend
+    plot.background = element_rect(fill = "white", color = NA)           # White plot background
+  )
+
+# Optional: save the plot
+#ggsave("../result/Figure S2. Gu_Label.png", figure_gu_label, width = 16, height = 10, dpi = 300, bg = "white")
+```
+
+## Appendix Figrue S3
+```{r echo=FALSE}
+# Define red and blue dong names
+red_dongs <- c("Yeoksam1", "Yeoui", "Jongno1_2_3_4Ga", "Seogyo", "Seocho3",
+               "Sinchon", "Myeong", "Yeongdeungpo", "Hangangno", "Samseong1")
+blue_dongs <- c("Dunchon1", "Changsin3", "Ichon2", "Singil5", "Sinwol6",
+                "Cheongnim", "Garibong", "Banpobon", "Muwak", "Hongje2")
+
+# Assign fill color to each dong
+seoul_map_11_highlight <- seoul_map_11 %>%
+  mutate(fill_color = case_when(
+    dong %in% red_dongs ~ "red",
+    dong %in% blue_dongs ~ "blue",
+    TRUE ~ "gray95"
+  ))
+
+# Plot (only colored regions, no text)
+figure_dong_highlight <- ggplot() +
+  # Dong polygons with color fill
+  geom_sf(data = seoul_map_11_highlight, aes(fill = fill_color), color = "grey60", size = 0.2) +
+  # GU-level black boundary
+  geom_sf(data = gu_boundaries, fill = NA, color = "black", size = 0.8) +
+  # Use identity scale for manual colors
+  scale_fill_identity() +
+  # Minimal clean theme
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    panel.grid = element_line(color = "grey90"),
+    axis.text = element_text(color = "black", size = 12),
+    axis.title = element_blank(),
+    legend.position = "none",
+    plot.background = element_rect(fill = "white", color = NA)
+  )
+
+# Optional: save the figure
+#ggsave("../result/Figure S3. top_bottom 10 Dong.pdf", figure_dong_highlight, width = 16, height = 10,  bg = "white")
+
+# Show the figure
+figure_dong_highlight
+```
+
+## Appendix. Figure S4
 ```{r echo=FALSE}
 population_map <- ggplot() + 
   geom_sf(data = seoul_map_11, aes(fill = population / 1000), color = "grey", size = 0.2) +  # dong boundaries in grey
@@ -853,8 +910,12 @@ population_map <- ggplot() +
   guides(
     fill = guide_colorbar(barwidth = 10, barheight = 0.5)  # adjust legend size
   )
-#ggsave("../result/Figure S2(a). Population.png", population_map, width = 8, height = 6, dpi = 300, bg = "white")
+#ggsave("../result/Figure S4(a). Population.png", population_map, width = 8, height = 6, dpi = 300, bg = "white")
 
+seoul_map_11 <- seoul_map_11 %>%
+  group_by(gu.x) %>%
+  mutate(gu_popu = sum(population, na.rm = TRUE)) %>%
+  ungroup()
 incidence_map <- ggplot() + 
   geom_sf(data = seoul_map_11, aes(fill = (incidence / gu_popu) * 100), color = "grey", size = 0.2) +  # dong boundaries in grey
   geom_sf(data = gu_boundaries_lines, color = "black", size = 1.5) +  # gu boundaries in thick black
@@ -871,7 +932,7 @@ incidence_map <- ggplot() +
   guides(
     fill = guide_colorbar(barwidth = 10, barheight = 0.5)  # adjust legend size
   )
-#ggsave("../result/Figure S2(b). Incidence.png", incidence_map, width = 8, height = 6, dpi = 300, bg = "white")
+#ggsave("../result/Figure S4(b). Incidence.png", incidence_map, width = 8, height = 6, dpi = 300, bg = "white")
 
 business_map <- ggplot() + 
   geom_sf(data = seoul_map_11, aes(fill = business / 1000), color = "grey", size = 0.2) +  # dong boundaries in grey
@@ -887,7 +948,7 @@ business_map <- ggplot() +
   guides(
     fill = guide_colorbar(barwidth = 10, barheight = 0.5)  # adjust legend size
   )
-#ggsave("../result/Figure S2(c). Business.png", business_map, width = 8, height = 6, dpi = 300, bg = "white")
+#ggsave("../result/Figure S4(c). Business.png", business_map, width = 8, height = 6, dpi = 300, bg = "white")
 
 poverty_map <- ggplot() + 
   geom_sf(data = seoul_map_11, aes(fill = poverty / 1000), color = "grey", size = 0.2) +  # dong boundaries in grey
@@ -903,5 +964,5 @@ poverty_map <- ggplot() +
   guides(
     fill = guide_colorbar(barwidth = 10, barheight = 0.5)  # adjust legend size
   )
-#ggsave("../result/Figure S2(d). Poverty.png", poverty_map, width = 8, height = 6, dpi = 300, bg = "white")
+#ggsave("../result/Figure S4(d). Poverty.png", poverty_map, width = 8, height = 6, dpi = 300, bg = "white")
 ```
