@@ -1,0 +1,581 @@
+---
+title: "revise code"
+author: "Zeyu Hu"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(igraph)
+library(dplyr)
+library(writexl)
+library(tidyr)
+library(sf)
+library(ggplot2)
+library(geojsonio)
+library(readr)
+library(writexl)
+library(scales)
+library(mclust)
+library(wdnet)
+```
+
+## Reviewer2 comment3: calculate distance
+```{r echo=FALSE}
+# Read TopoJSON file
+seoul_map <- geojson_read("../data/skorea-submunicipalities-2018-topo.json", what = "sp")
+
+# Assume seoul_map is already in sf format, filter Seoul region
+seoul_map_11 <- st_as_sf(seoul_map[substr(seoul_map@data$code, 1, 2) == "11", ])
+
+# calculate centroid
+seoul_map_11$centroid <- st_centroid(seoul_map_11$geometry)
+
+# lon, lat
+coords <- st_coordinates(seoul_map_11$centroid)
+
+# calculate pairwise distance matrix(unit: km)
+dist_matrix <- distm(coords, fun = distHaversine) / 1000  
+rownames(dist_matrix) <- seoul_map_11$code
+colnames(dist_matrix) <- seoul_map_11$code
+
+
+```
+
+## Reviewer2 comment3: normalization by distance for weighted density
+```{r echo=FALSE}
+# Set data directory
+data_dir <- "../data/"
+years <- 2020:2022
+file_list <- paste0(data_dir, "network_", years, ".csv")
+
+# Read node information
+nodes <- read.csv("../data/Seoul_node_info.csv")
+node_to_gu <- setNames(nodes$gu, nodes$node)
+
+# Count number of nodes per gu
+gu_node_counts <- table(nodes$gu)
+total_nodes <- sum(gu_node_counts)
+
+# Initialize result lists
+within_density_list <- list()
+across_density_list <- list()
+overall_density_list <- list()
+
+# Loop over each year
+for (i in seq_along(file_list)) {
+  file_path <- file_list[i]
+  file_year <- as.character(years[i])
+  
+  if (!file.exists(file_path)) {
+    message("File not found: ", file_path)
+    next
+  }
+  
+  # Read network data
+  network_data <- read.csv(file_path)
+  network_data$source_gu <- node_to_gu[as.character(network_data$source)]
+  network_data$target_gu <- node_to_gu[as.character(network_data$target)]
+  
+  # ---- standardized_weight ----
+  network_data$distance <- mapply(
+    function(s, t) dist_matrix[as.character(s), as.character(t)],
+    network_data$source, network_data$target
+  )
+  network_data$standardized_weight <- network_data$strength * network_data$distance
+  
+  ### ----- 1. Per-gu within density -----
+  within_density <- network_data %>%
+    filter(source_gu == target_gu) %>%
+    group_by(source_gu) %>%
+    summarise(weight_sum = sum(standardized_weight, na.rm = TRUE)) %>%
+    rename(gu = source_gu) %>%
+    mutate(n = as.numeric(gu_node_counts[gu]),
+           denom = n * (n-1),
+           value = weight_sum / denom,
+           year = file_year) %>%
+    dplyr::select(gu, value, year)
+  
+  ### ----- 2. Per-gu across density -----
+  across_density <- network_data %>%
+    filter(source_gu != target_gu) %>%
+    pivot_longer(cols = c(source_gu, target_gu), values_to = "gu") %>%
+    group_by(gu) %>%
+    summarise(weight_sum = sum(standardized_weight, na.rm = TRUE)) %>%
+    mutate(n = as.numeric(gu_node_counts[gu]),
+           denom = 2 * n * (total_nodes - n),
+           value = weight_sum / denom,
+           year = file_year) %>%
+    dplyr::select(gu, value, year)
+  
+  ### ----- 3. Overall network-level within & across density -----
+  within_total <- network_data %>%
+    filter(source_gu == target_gu) %>%
+    summarise(weight_sum = sum(standardized_weight, na.rm = TRUE)) %>%
+    pull(weight_sum)
+  
+  across_total <- network_data %>%
+    filter(source_gu != target_gu) %>%
+    summarise(weight_sum = sum(standardized_weight, na.rm = TRUE)) %>%
+    pull(weight_sum)
+  
+  denom_within <- sum(gu_node_counts * (gu_node_counts - 1))
+  denom_across <- sum(as.numeric(gu_node_counts) * (total_nodes - as.numeric(gu_node_counts)))
+  
+  # density
+  overall_density <- data.frame(
+    year = file_year,
+    type = c("within", "across"),
+    value = c(within_total / denom_within, across_total / denom_across)
+  )
+  
+  # Store results
+  within_density_list[[file_year]] <- within_density
+  across_density_list[[file_year]] <- across_density
+  overall_density_list[[file_year]] <- overall_density
+}
+
+# Combine and reshape per-gu densities
+within_density_df <- bind_rows(within_density_list) %>%
+  pivot_wider(names_from = year, values_from = value, values_fill = 0) %>%
+  arrange(gu)
+
+across_density_df <- bind_rows(across_density_list) %>%
+  pivot_wider(names_from = year, values_from = value, values_fill = 0) %>%
+  arrange(gu)
+
+# Combine overall network-level densities
+overall_density_df <- bind_rows(overall_density_list) %>%
+  pivot_wider(names_from = year, values_from = value)
+
+
+# ----- 1. Prepare basic information -----
+
+# Define the order of gu names based on existing gu_node_counts
+gu_order <- names(gu_node_counts)
+
+# Summarize population for each gu (district) by aggregating from nodes table
+pop_by_gu <- nodes %>%
+  group_by(gu) %>%
+  summarise(population = sum(population, na.rm = TRUE)) %>%
+  filter(gu %in% gu_order) %>%
+  mutate(gu = factor(gu, levels = gu_order)) %>%
+  arrange(gu)
+
+# Number of dongs (sub-districts) per gu
+dong_count <- data.frame(
+  gu = gu_order,
+  number_of_dongs = as.numeric(gu_node_counts)
+)
+
+# Merge population and dong counts
+base_info <- left_join(pop_by_gu, dong_count, by = "gu")
+
+# ----- 2. Merge per-gu within and across density -----
+
+# Reshape wide → long format: columns are gu, year, density values
+within_density_df_long <- within_density_df %>%
+  pivot_longer(-gu, names_to = "year", values_to = "within")
+
+across_density_df_long <- across_density_df %>%
+  pivot_longer(-gu, names_to = "year", values_to = "across")
+
+# Merge within and across together for each gu-year
+density_all <- left_join(within_density_df_long, across_density_df_long, by = c("gu", "year"))
+
+# Reshape long → wide format: separate columns for each year's within/across
+density_wide <- density_all %>%
+  pivot_wider(names_from = year, values_from = c(within, across), names_sep = "_")
+
+# Merge with population and dong count
+gu_summary <- left_join(base_info, density_wide, by = "gu")
+
+# ----- 3. Create the "Total" row (for entire network) -----
+
+total_row <- data.frame(
+  gu = "Total",
+  population = sum(gu_summary$population, na.rm = TRUE),
+  number_of_dongs = sum(gu_summary$number_of_dongs),
+  within_2020 = overall_density_df %>% filter(type == "within") %>% pull(`2020`),
+  within_2021 = overall_density_df %>% filter(type == "within") %>% pull(`2021`),
+  within_2022 = overall_density_df %>% filter(type == "within") %>% pull(`2022`),
+  across_2020 = overall_density_df %>% filter(type == "across") %>% pull(`2020`),
+  across_2021 = overall_density_df %>% filter(type == "across") %>% pull(`2021`),
+  across_2022 = overall_density_df %>% filter(type == "across") %>% pull(`2022`)
+)
+
+# ----- 4. Combine all and finalize output -----
+
+# Bind per-gu summary with the Total row
+final_table <- bind_rows(gu_summary, total_row)
+# reorder based on population
+final_table <- final_table %>%
+  filter(gu != "Total") %>%
+  arrange(desc(population)) %>%
+  bind_rows(filter(final_table, gu == "Total"))
+### get final table for paper
+# Step 1: divide population by 1000
+final_table$population <- final_table$population / 1000
+
+# Step 2: define columns to process
+target_cols <- c("within_2020", "within_2021", "within_2022",
+                 "across_2020", "across_2021", "across_2022")
+
+# Step 3: extract total values for each column (last row of table)
+total_row <- final_table[final_table$gu == "Total", target_cols]
+
+# Step 4: loop and replace each target column
+for (col in target_cols) {
+  base_val <- as.numeric(total_row[[col]])
+  final_table[[col]] <- sapply(final_table[[col]], function(x) {
+    if (is.na(x)) return("")
+    val_int <- round(x)
+    ratio <- round(x / base_val, 2)
+    paste0(val_int, " (", sprintf("%.2f", ratio), ")")
+  })
+}
+
+# writexl::write_xlsx(final_table, "../result/revised Table 1. Within_Across weighted mobility densities in Seoul (2020–2022).xlsx")
+```
+
+## Reviewer2 comment4: 36 months analysis
+```{r echo=FALSE}
+# ==========================
+#   0. path
+# ==========================
+data_dir <- "../data/monthly/"
+result_dir <- "../result/monthly/community_result"
+result_plot_dir <- "../result/monthly/community_plot"
+
+seoul_map <- geojson_read("../data/skorea-submunicipalities-2018-topo.json", what = "sp")
+seoul_map_11 <- st_as_sf(seoul_map[substr(seoul_map@data$code, 1, 2) == "11", ])
+seoul_map_11 <- seoul_map_11 %>% mutate(gu = substr(code, 1, 4))
+
+# gu bound
+gu_boundaries <- seoul_map_11 %>%
+  group_by(gu) %>%
+  summarise(geometry = st_union(geometry))
+gu_boundaries_lines <- st_cast(gu_boundaries, "MULTILINESTRING")
+
+# ==========================
+#   1. month loop
+# ==========================
+months <- sprintf("%d%02d", rep(2020:2022, each = 12), 1:12) # 202001–202212
+
+for (month in months) {
+  file_path <- file.path(data_dir, paste0("network_", month, ".csv"))
+  df <- read.csv(file_path)
+  colnames(df) <- c("source", "target", "weight")
+  g <- graph_from_data_frame(df, directed = TRUE)
+  
+  infomap_community <- cluster_infomap(g, nb.trials = 100)
+  community_membership <- membership(infomap_community)
+  
+  # relabel
+  membership_df <- data.frame(node = names(community_membership),
+                              community = community_membership)
+  community_sizes <- membership_df %>%
+    group_by(community) %>%
+    summarise(size = n()) %>%
+    arrange(desc(size)) %>%
+    mutate(new_community = row_number())
+  membership_df <- membership_df %>%
+    left_join(community_sizes, by = "community") %>%
+    mutate(community = new_community) %>%
+    dplyr::select(-new_community)
+  community_membership <- setNames(membership_df$community, membership_df$node)
+  
+  # ---- 3. save membership ----
+  # saveRDS(community_membership, file = file.path(result_dir,
+  #          paste0("community_membership_", month, ".rds")))
+  
+  # ---- 4. plot ----
+  map_data <- seoul_map_11 %>%
+    left_join(data.frame(code = names(community_membership),
+                         community = as.factor(community_membership)),
+              by = "code")
+  community_colors <- c(
+    "1"  = "#d35f00", # orange-brown
+    "2"  = "#fd7c1a", # bright orange
+    "3"  = "#fcff07", # yellow
+    "4"  = "#fe9376", # salmon
+    "5"  = "#f3dee0", # pink
+    "6"  = "#ffbd15", # amber
+    "7"  = "#a0c9e5", # light blue
+    "8"  = "#1d9bf7", # bright blue
+    "9"  = "#303cf9", # deep blue
+    "10" = "#b4403e", # brick red
+    "11" = "#603c87", # purple
+    "12" = "#000000", # black
+    "13" = "#2ca02c", # green
+    "14" = "#17becf", # cyan
+    "15" = "#9467bd", # violet
+    "16" = "#e377c2"  # magenta
+    )
+  community_map <- ggplot() +
+    geom_sf(data = map_data, aes(fill = community), color = "grey", size = 0.2) +
+    geom_sf(data = gu_boundaries_lines, color = "black", size = 1.0) +
+    scale_fill_manual(values = community_colors) +
+    theme_minimal() +
+    theme(
+      legend.position = "bottom",
+      legend.box = "horizontal",
+      panel.border = element_rect(color = "black", fill = NA, size = 1),
+      plot.background = element_rect(fill = "white", color = NA)
+    ) +
+    guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+  
+  # save PNG
+  # ggsave(filename = file.path(result_plot_dir, paste0("community_map_", month, ".png")),
+  #        plot = community_map, width = 8, height = 6, dpi = 300, bg = "white")
+}
+
+# ---- Directed modularity function (Leicht & Newman 2008) ----
+directed_modularity <- function(g, membership) {
+  adj <- as_adjacency_matrix(g, attr = "weight", sparse = FALSE)
+  out_strength <- rowSums(adj)   # outgoing weighted degree
+  in_strength  <- colSums(adj)   # incoming weighted degree
+  m <- sum(adj)                  # total edge weight
+  
+  Q <- 0
+  for (i in 1:nrow(adj)) {
+    for (j in 1:ncol(adj)) {
+      if (membership[i] == membership[j]) {
+        Q <- Q + (adj[i, j] - (out_strength[i] * in_strength[j] / m))
+      }
+    }
+  }
+  Q / m
+}
+
+# ---- Assortativity function (using wdnet) ----
+gen_assort <- function(data) {
+  assortativity <- apply(data, 3, function(M) {
+    wdnet::assortcoef(adj = M, directed = FALSE)
+  })
+  return(assortativity)
+}
+
+# ---- Main function to compute metrics for a given month ----
+compute_metrics_monthly <- function(month) {
+  # 1. Read network data
+  file_path <- file.path("../data/monthly", paste0("network_", month, ".csv"))
+  df <- read.csv(file_path)
+  colnames(df) <- c("source", "target", "weight")
+  g <- graph_from_data_frame(df, directed = TRUE)
+  
+  # 2. Read memberships
+  membership_month  <- readRDS(file.path("../result/monthly/community_result",
+                                         paste0("community_membership_", month, ".rds")))
+  membership_3years <- readRDS("../result/community_membership_3years.rds")
+  
+  # Align node order with the graph
+  membership_month  <- membership_month[V(g)$name]
+  membership_3years <- membership_3years[V(g)$name]
+  
+  # 3. Directed modularity
+  mod_val <- directed_modularity(g, membership_month)
+  
+  # 4. Assortativity
+  adj_matrix <- as_adjacency_matrix(g, attr = "weight", sparse = FALSE)
+  g_data <- array(adj_matrix, dim = c(nrow(adj_matrix), ncol(adj_matrix), 1))
+  assort_val <- gen_assort(data = g_data)
+  
+  # 5. ARI vs 3-year clustering
+  ari_val <- adjustedRandIndex(membership_month, membership_3years)
+  
+  # Return results
+  return(data.frame(
+    month = month,
+    modularity = mod_val,
+    assortativity = assort_val,
+    ARI_vs_3years = ari_val
+  ))
+}
+
+
+results_monthly <- do.call(rbind, lapply(months, compute_metrics_monthly))
+
+# save
+write.csv(results_monthly, "../result/monthly/community_metrics_36months.csv", row.names = FALSE)
+
+print(head(results_monthly))
+```
+
+## Reviewer2 comment6: 3 years modularity/assortativity/ARI
+```{r echo=FALSE}
+# ==========================
+#   1. read map data
+# ==========================
+seoul_map <- geojson_read("../data/skorea-submunicipalities-2018-topo.json", what = "sp")
+seoul_map_11 <- st_as_sf(seoul_map[substr(seoul_map@data$code, 1, 2) == "11", ])
+seoul_map_11 <- seoul_map_11 %>% mutate(gu = substr(code, 1, 4))
+gu_boundaries <- seoul_map_11 %>%
+  group_by(gu) %>%
+  summarise(geometry = st_union(geometry))
+gu_boundaries_lines <- st_cast(gu_boundaries, "MULTILINESTRING")
+
+# ==========================
+#   2. load community detection result
+# ==========================
+community_membership_2020 <- readRDS("../result/community_membership_2020.rds")
+community_membership_2021 <- readRDS("../result/community_membership_2021.rds")
+community_membership_2022 <- readRDS("../result/community_membership_2022.rds")
+community_membership <- readRDS("../result/community_membership_3years.rds")
+map_data_2020 <- seoul_map_11 %>%
+  left_join(data.frame(code = names(community_membership_2020),
+                       community = as.factor(community_membership_2020)),
+            by = "code")
+map_data_2021 <- seoul_map_11 %>%
+  left_join(data.frame(code = names(community_membership_2021),
+                       community = as.factor(community_membership_2021)),
+            by = "code")
+map_data_2022 <- seoul_map_11 %>%
+  left_join(data.frame(code = names(community_membership_2022),
+                       community = as.factor(community_membership_2022)),
+            by = "code")
+
+# ==========================
+#   3. color
+# ==========================
+community_colors_2020 <- c(
+  "1" = "#d35f00", "2" = "#fd7c1a", "3" = "#fcff07", "4" = "#fe9376",
+  "5" = "#f3dee0", "6" = "#1d9bf7", "7" = "#ffbd15", "8" = "#303cf9",
+  "9" = "#b4403e", "10" = "#a0c9e5")
+community_colors_2021 <- c(
+  "1" = "#d35f00", "2" = "#fd7c1a", "3" = "#fcff07", "4" = "#fe9376",
+  "5" = "#1d9bf7", "6" = "#ffbd15", "7" = "#f3dee0", "8" = "#303cf9",
+  "9" = "#603c87", "10" = "#b4403e", "11" = "#a0c9e5", "12" = "black"
+)
+community_colors_2022 <- c(
+  "1" = "#d35f00", "2" = "#fd7c1a", "3" = "#fcff07", "4" = "#fe9376",
+  "5" = "#ffbd15", "6" = "#1d9bf7", "7" = "#f3dee0", "8" = "#303cf9",
+  "9" = "#603c87", "10" = "#b4403e", "11" = "#a0c9e5", "12" = "black"
+)
+# ==========================
+#   4. save
+# ==========================
+community_map_2020 <- ggplot() +
+  geom_sf(data = map_data_2020, aes(fill = community), color = "grey", size = 0.2) +
+  geom_sf(data = gu_boundaries_lines, color = "black", size = 1.5) +
+  scale_fill_manual(values = community_colors_2020) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    plot.background = element_rect(fill = "white", color = NA)
+  ) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE)) 
+
+community_map_2021 <- ggplot() +
+  geom_sf(data = map_data_2021, aes(fill = community), color = "grey", size = 0.2) +
+  geom_sf(data = gu_boundaries_lines, color = "black", size = 1.5) +
+  scale_fill_manual(values = community_colors_2021) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    plot.background = element_rect(fill = "white", color = NA)
+  ) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE)) 
+
+community_map_2022 <- ggplot() +
+  geom_sf(data = map_data_2022, aes(fill = community), color = "grey", size = 0.2) +
+  geom_sf(data = gu_boundaries_lines, color = "black", size = 1.5) +
+  scale_fill_manual(values = community_colors_2022) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    plot.background = element_rect(fill = "white", color = NA)
+  ) +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE)) 
+
+# ggsave(
+#   filename = "../result/Figure_S2_2020.png",
+#   plot = community_map_2020,
+#   width = 8, height = 6, dpi = 300, bg = "white"
+# )
+# ggsave(
+#   filename = "../result/Figure_S2_2021.png",
+#   plot = community_map_2021,
+#   width = 8, height = 6, dpi = 300, bg = "white"
+# )
+# ggsave(
+#   filename = "../result/Figure_S2_2022.png",
+#   plot = community_map_2022,
+#   width = 8, height = 6, dpi = 300, bg = "white"
+# )
+
+data_dir <- "../data/"
+
+# ---- Directed modularity function (Leicht & Newman 2008) ----
+directed_modularity <- function(g, membership) {
+  adj <- as_adjacency_matrix(g, attr = "weight", sparse = FALSE)
+  out_strength <- rowSums(adj)   # outgoing weighted degree
+  in_strength  <- colSums(adj)   # incoming weighted degree
+  m <- sum(adj)                  # total edge weight
+  
+  Q <- 0
+  for (i in 1:nrow(adj)) {
+    for (j in 1:ncol(adj)) {
+      if (membership[i] == membership[j]) {
+        Q <- Q + (adj[i, j] - (out_strength[i] * in_strength[j] / m))
+      }
+    }
+  }
+  Q / m
+}
+
+# ---- Assortativity function (using wdnet) ----
+gen_assort <- function(data) {
+  assortativity <- apply(data, 3, function(M) {
+    wdnet::assortcoef(adj = M, directed = FALSE)
+  })
+  return(assortativity)
+}
+
+# ---- Main function to compute metrics for a given year ----
+compute_metrics <- function(year) {
+  # 1. Read network data
+  file_path <- paste0(data_dir, "network_", year, ".csv")
+  df <- read.csv(file_path)
+  colnames(df) <- c("source", "target", "weight")
+  g <- graph_from_data_frame(df, directed = TRUE)
+  
+  # 2. Read memberships
+  membership_year   <- readRDS(paste0("../result/community_membership_", year, ".rds"))
+  membership_3years <- readRDS("../result/community_membership_3years.rds")
+  
+  # Align node order with the graph
+  membership_year   <- membership_year[V(g)$name]
+  membership_3years <- membership_3years[V(g)$name]
+  
+  # 3. Directed modularity
+  mod_val <- directed_modularity(g, membership_year)
+  
+  # 4. Assortativity
+  adj_matrix <- as_adjacency_matrix(g, attr = "weight", sparse = FALSE)
+  g_data <- array(adj_matrix, dim = c(nrow(adj_matrix), ncol(adj_matrix), 1))
+  assort_val <- gen_assort(data = g_data)
+  
+  # 5. ARI vs 3-year clustering
+  ari_val <- adjustedRandIndex(membership_year, membership_3years)
+  
+  # Return results
+  return(data.frame(
+    year = year,
+    modularity = mod_val,
+    assortativity = assort_val,
+    ARI_vs_3years = ari_val
+  ))
+}
+
+# ---- Run for 2020–2022 ----
+results <- do.call(rbind, lapply(2020:2022, compute_metrics))
+
+print(results)
+```

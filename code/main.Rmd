@@ -15,6 +15,7 @@ library(ggplot2)
 library(geojsonio)
 library(readr)
 library(writexl)
+library(scales)
 ```
 
 ## Read data
@@ -447,7 +448,7 @@ strength_plot <- ggplot(cdf_data, aes(x = strength, y = tail_cdf)) +
   scale_y_log10() +
   scale_x_log10(breaks = c(1, 10, 73, 100), expand = c(0, 0)) +
   labs(
-    x = "Node In-Strength (log scale)",
+    x = "Node Strength (log scale)",
     y = "Survival (log scale)"
   ) +
   theme_minimal() +
@@ -870,25 +871,28 @@ seoul_map_11_highlight <- seoul_map_11 %>%
 
 # Plot (only colored regions, no text)
 figure_dong_highlight <- ggplot() +
-  # Dong polygons with color fill
   geom_sf(data = seoul_map_11_highlight, aes(fill = fill_color), color = "grey60", size = 0.2) +
-  # GU-level black boundary
   geom_sf(data = gu_boundaries, fill = NA, color = "black", size = 0.8) +
-  # Use identity scale for manual colors
-  scale_fill_identity() +
-  # Minimal clean theme
+  scale_fill_identity(
+    guide = "legend",
+    labels = c("Top 10 Weighted PageRank", "Bottom 10 Weighted PageRank"),
+    breaks = c("red", "blue")
+  ) +
   theme_minimal() +
   theme(
     panel.border = element_rect(color = "black", fill = NA, size = 1),
     panel.grid = element_line(color = "grey90"),
     axis.text = element_text(color = "black", size = 12),
     axis.title = element_blank(),
-    legend.position = "none",
+    legend.position = "bottom",
+    legend.direction = "horizontal",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 20),
     plot.background = element_rect(fill = "white", color = NA)
   )
 
 # Optional: save the figure
-#ggsave("../result/Figure S3. top_bottom 10 Dong.pdf", figure_dong_highlight, width = 16, height = 10,  bg = "white")
+#ggsave("../result/Figure S3. top_bottom 10 Dong.pdf", figure_dong_highlight, width = 16, height = 11,  bg = "white")
 
 # Show the figure
 figure_dong_highlight
@@ -900,69 +904,122 @@ population_map <- ggplot() +
   geom_sf(data = seoul_map_11, aes(fill = population / 1000), color = "grey", size = 0.2) +  # dong boundaries in grey
   geom_sf(data = gu_boundaries_lines, color = "black", size = 1.5) +  # gu boundaries in thick black
   scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Population") +  # color by population
-  theme_minimal() + 
+  theme_minimal() +
   theme(
     legend.position = "bottom",
     legend.box = "horizontal",
+    legend.title = element_text(size = 16),  
+    legend.text = element_text(size = 14),    
     panel.border = element_rect(color = "black", fill = NA, size = 1),
     plot.background = element_rect(fill = "white", color = NA)
   ) + 
   guides(
-    fill = guide_colorbar(barwidth = 10, barheight = 0.5)  # adjust legend size
+    fill = guide_colorbar(barwidth = 15, barheight = 0.8)
   )
-#ggsave("../result/Figure S4(a). Population.png", population_map, width = 8, height = 6, dpi = 300, bg = "white")
+
 
 seoul_map_11 <- seoul_map_11 %>%
   group_by(gu.x) %>%
   mutate(gu_popu = sum(population, na.rm = TRUE)) %>%
   ungroup()
-incidence_map <- ggplot() + 
-  geom_sf(data = seoul_map_11, aes(fill = (incidence / gu_popu) * 100), color = "grey", size = 0.2) +  # dong boundaries in grey
+incidence2020_map <- ggplot() + 
+  geom_sf(data = seoul_map_11, aes(fill = (incidence_2020 / gu_popu) * 100000), color = "grey", size = 0.2) +  # dong boundaries in grey
   geom_sf(data = gu_boundaries_lines, color = "black", size = 1.5) +  # gu boundaries in thick black
   scale_fill_gradient(low = "coral", high = "darkred", 
-                      name = "Incidence (%)", 
-                      labels = percent_format(scale = 1)) +  # show percentage format
-  theme_minimal() + 
+                      name = "Number of Cases per 100,000") +  # show percentage format
+  theme_minimal() +
   theme(
     legend.position = "bottom",
     legend.box = "horizontal",
+    legend.title = element_text(size = 16),  
+    legend.text = element_text(size = 14),    
     panel.border = element_rect(color = "black", fill = NA, size = 1),
     plot.background = element_rect(fill = "white", color = NA)
   ) + 
   guides(
-    fill = guide_colorbar(barwidth = 10, barheight = 0.5)  # adjust legend size
+    fill = guide_colorbar(barwidth = 15, barheight = 0.8)
   )
-#ggsave("../result/Figure S4(b). Incidence.png", incidence_map, width = 8, height = 6, dpi = 300, bg = "white")
+
+incidence2021_map <- ggplot() + 
+  geom_sf(data = seoul_map_11, aes(fill = (incidence_2021 / gu_popu) * 100000), color = "grey", size = 0.2) +  # dong boundaries in grey
+  geom_sf(data = gu_boundaries_lines, color = "black", size = 1.5) +  # gu boundaries in thick black
+  scale_fill_gradient(low = "coral", high = "darkred", 
+                      name = "Number of Cases per 100,000") +  # show percentage format
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.title = element_text(size = 16),  
+    legend.text = element_text(size = 14),    
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    plot.background = element_rect(fill = "white", color = NA)
+  ) + 
+  guides(
+    fill = guide_colorbar(barwidth = 15, barheight = 0.8)
+  )
+
+incidence2022_map <- ggplot() + 
+  geom_sf(data = seoul_map_11, aes(fill = (incidence_2022 / gu_popu) * 100000), color = "grey", size = 0.2) +  # dong boundaries in grey
+  geom_sf(data = gu_boundaries_lines, color = "black", size = 1.5) +  # gu boundaries in thick black
+  scale_fill_gradient(low = "coral", high = "darkred", 
+                      name = "Number of Cases per 100,000") +  # show percentage format
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.title = element_text(size = 16),  
+    legend.text = element_text(size = 14),    
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    plot.background = element_rect(fill = "white", color = NA)
+  ) + 
+  guides(
+    fill = guide_colorbar(barwidth = 15, barheight = 0.8)
+  )
 
 business_map <- ggplot() + 
   geom_sf(data = seoul_map_11, aes(fill = business / 1000), color = "grey", size = 0.2) +  # dong boundaries in grey
   geom_sf(data = gu_boundaries_lines, color = "black", size = 1.5) +  # gu boundaries in thick black
   scale_fill_gradient(low = "lightgreen", high = "darkgreen", name = "Business") +  # color by number of businesses
-  theme_minimal() + 
+  theme_minimal() +
   theme(
     legend.position = "bottom",
     legend.box = "horizontal",
+    legend.title = element_text(size = 16),  
+    legend.text = element_text(size = 14),    
     panel.border = element_rect(color = "black", fill = NA, size = 1),
     plot.background = element_rect(fill = "white", color = NA)
   ) + 
   guides(
-    fill = guide_colorbar(barwidth = 10, barheight = 0.5)  # adjust legend size
+    fill = guide_colorbar(barwidth = 15, barheight = 0.8)
   )
-#ggsave("../result/Figure S4(c). Business.png", business_map, width = 8, height = 6, dpi = 300, bg = "white")
+
 
 poverty_map <- ggplot() + 
   geom_sf(data = seoul_map_11, aes(fill = poverty / 1000), color = "grey", size = 0.2) +  # dong boundaries in grey
   geom_sf(data = gu_boundaries_lines, color = "black", size = 1.5) +  # gu boundaries in thick black
-  scale_fill_gradient(low = "coral", high = "darkred", name = "Poverty") +  # color by number of welfare beneficiaries
-  theme_minimal() + 
+  scale_fill_gradient(
+  low = "#FFE0B2",  # 浅橙色 (light orange)
+  high = "#FB8C00", # 深橙色 (vivid medium orange)
+  name = "NBLS Beneficiaries per Capita (%)"
+)+  # color by number of welfare beneficiaries
+  theme_minimal() +
   theme(
     legend.position = "bottom",
     legend.box = "horizontal",
+    legend.title = element_text(size = 16),  
+    legend.text = element_text(size = 14),    
     panel.border = element_rect(color = "black", fill = NA, size = 1),
     plot.background = element_rect(fill = "white", color = NA)
   ) + 
   guides(
-    fill = guide_colorbar(barwidth = 10, barheight = 0.5)  # adjust legend size
+    fill = guide_colorbar(barwidth = 15, barheight = 0.8)
   )
-#ggsave("../result/Figure S4(d). Poverty.png", poverty_map, width = 8, height = 6, dpi = 300, bg = "white")
+# 
+# ggsave("../result/Figure S4(a). Incidence_2020.png", incidence2020_map, width = 12, height = 7.5, dpi = 300, bg = "white")
+# ggsave("../result/Figure S4(b). Incidence_2021.png", incidence2021_map, width = 12, height = 7.5, dpi = 300, bg = "white")
+# ggsave("../result/Figure S4(c). Incidence_2022.png", incidence2022_map, width = 12, height = 7.5, dpi = 300, bg = "white")
+# ggsave("../result/Figure S4(d). Population.png", population_map, width = 12, height = 7.5, dpi = 300, bg = "white")
+# ggsave("../result/Figure S4(e). Poverty.png", poverty_map, width = 12, height = 7.5, dpi = 300, bg = "white")
+# ggsave("../result/Figure S4(f). Business.png", business_map, width = 12, height = 7.5, dpi = 300, bg = "white")
 ```
+

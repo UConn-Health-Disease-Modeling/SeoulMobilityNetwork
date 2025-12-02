@@ -1,0 +1,245 @@
+---
+title: "Untitled"
+author: "Zeyu Hu"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+# Read the node and network data
+nodes <- read.csv("../data/Seoul_node_info.csv")
+network202202 <- read.csv("../data/monthly/network_202202.csv")
+
+# Create a graph from the merged network data and name it g
+g202202 <- graph_from_data_frame(d = network202202, directed = TRUE)
+
+# Set edge weights
+E(g202202)$weight <- network202202$strength
+
+# Add gu and dong attributes to each node
+V(g202202)$gu <- nodes$gu[match(V(g202202)$name, nodes$node)]
+V(g202202)$dong <- nodes$dong[match(V(g202202)$name, nodes$node)]
+V(g202202)$population <- nodes$population[match(V(g202202)$name, nodes$node)]
+V(g202202)$business <- nodes$business[match(V(g202202)$name, nodes$node)]
+
+# Create the adjacency matrix
+adjmatrix <- as_adjacency_matrix(g202202, sparse = FALSE, attr = "weight")
+adjnull <- `rownames<-`(`colnames<-`(adjmatrix, NULL), NULL)
+
+seoul_map <- geojson_read("../data/skorea-submunicipalities-2018-topo.json", what = "sp")
+
+# Assume seoul_map is already in sf format, filter Seoul region
+seoul_map_11 <- st_as_sf(seoul_map[substr(seoul_map@data$code, 1, 2) == "11", ])
+
+# Extract gu information (first 4 digits of the code)
+seoul_map_11 <- seoul_map_11 %>%
+  mutate(gu = substr(code, 1, 4))  # Add gu column
+# Merge by gu and calculate the boundary of each gu
+gu_boundaries <- seoul_map_11 %>%
+  group_by(gu) %>%
+  summarise(geometry = st_union(geometry))  # Merge geometry
+gu_boundaries_lines <- st_cast(gu_boundaries, "MULTILINESTRING")
+
+# Calculate node strength (average of all and total strength)
+strength_data <- data.frame(
+  node = V(g202202)$name, 
+  all_strength = strength(g202202, mode = "all", loops = FALSE),
+  total_strength = strength(g202202, mode = "total")
+) %>%
+  mutate(strength = (all_strength + total_strength) / 2) %>%  # Average strength
+  dplyr::select(node, strength)
+
+# Load wdnet package for centrality computation
+library(wdnet)
+
+# Compute harmonic closeness centrality (outgoing)
+myclose_out <- centrality(
+  adj = adjmatrix,
+  measure = "closeness", 
+  closeness.control = list(method = "harmonic", distance = FALSE, mode = "out")
+)
+myclose_out <- as.data.frame(myclose_out)
+
+# Compute harmonic closeness centrality (incoming)
+myclose_in <- centrality(
+  adj = adjmatrix,
+  measure = "closeness", 
+  closeness.control = list(method = "harmonic", distance = FALSE, mode = "in")
+)
+myclose_in <- as.data.frame(myclose_in)
+
+# Compute Weighted PageRank (WPR) centrality
+mywpr_null <- centrality(
+  adj = adjmatrix,
+  measure = "wpr", 
+  wpr.control = list(gamma = 0.85, theta = 1)
+)
+mywpr_null <- as.data.frame(mywpr_null)
+
+# Combine all centrality measures into one data frame
+centrality <- data.frame(
+  name = myclose_out$name,
+  closeness_out = myclose_out$closeness,
+  closeness_in = myclose_in$closeness,
+  wpr = mywpr_null$wpr
+)
+
+# Merge with node strength
+centrality <- centrality %>% 
+  left_join(strength_data, by = c("name" = "node"))
+
+# Load required package
+library(poweRlaw)
+
+# Perform power-law test for in_strength
+strength <- strength_data$strength
+strength <- strength / 10000
+strength <- floor(strength)
+
+# Create power-law distribution object
+m_pl_in <- displ$new(strength)
+
+# Estimate parameters
+est_in <- estimate_xmin(m_pl_in)
+m_pl_in$setXmin(est_in)
+
+# Set random seed
+set.seed(123)
+
+# Perform bootstrap test
+bs_in <- bootstrap_p(m_pl_in, no_of_sims = 10, threads = 1)
+
+# Output in-strength results
+cat("strength P-value:", bs_in$p, "\n")
+cat("strength xmin:", m_pl_in$xmin, "\n")
+cat("strength pars (alpha):", m_pl_in$pars, "\n")
+cat("strength xmin standard error:", sd(bs_in$bootstraps$xmin), "\n")
+cat("strength pars standard error:", sd(bs_in$bootstraps$pars), "\n\n")
+cat("Number of dongs exceed the xmin:", sum(strength > m_pl_in$xmin), 
+    ", accounting for", sprintf("%.2f%%", sum(strength[strength > m_pl_in$xmin]) / sum(strength) * 100), 
+    "of the total strength.\n")
+
+library(ggpubr)
+
+# Calculate the CDF of Strength
+cdf_data <- data.frame(
+  strength = sort(strength),
+  cdf = ecdf(strength)(sort(strength))
+)
+
+# Calculate right-tail cumulative distribution (1 - CDF)
+cdf_data$tail_cdf <- 1 - cdf_data$cdf
+
+# Plot the right-tail cumulative distribution of Strength
+strength_plot <- ggplot(cdf_data, aes(x = strength, y = tail_cdf)) +
+  geom_point(aes(color = ifelse(strength >= m_pl_in$xmin, "Above Threshold", "Below Threshold"))) +
+  scale_y_log10() +
+  scale_x_log10(breaks = c(1, 10, m_pl_in$xmin), expand = c(0, 0)) +
+  labs(
+    x = "Node Strength (log scale)",
+    y = "Survival (log scale)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.title = element_text(size = 20),
+    axis.text = element_text(size = 16),
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    panel.grid.minor = element_blank(),
+    legend.position = "none"
+  ) +
+  scale_color_manual(values = c("Below Threshold" = "lightblue", "Above Threshold" = "lightcoral")) +
+  {
+    xmin <- m_pl_in$xmin
+    alpha <- m_pl_in$pars
+    fitted_x <- seq(xmin, max(cdf_data$strength), length.out = 100)
+    fitted_y <- (fitted_x / xmin)^(-alpha + 1)
+    y_baseline <- cdf_data$tail_cdf[cdf_data$strength == xmin]
+    fitted_y <- fitted_y * y_baseline
+    geom_line(data = data.frame(strength = fitted_x, tail_cdf = fitted_y),
+              aes(x = strength, y = tail_cdf), color = "blue", linetype = "dashed", linewidth = 0.8)
+  } +
+  geom_vline(xintercept = m_pl_in$xmin, linetype = "dashed", color = "black")
+
+# Save the plot as PNG file
+ggsave(filename = "../unique_month_result/Strength_dist_202202.png",  plot = strength_plot, width = 6, height = 6, dpi = 300, bg = "white")
+
+strength_map <- ggplot() +
+  geom_sf(data = seoul_map_11, aes(fill = factor(strength > m_pl_in$xmin, levels = c(TRUE, FALSE))), 
+          color = "grey", size = 0.2) +  # dong boundaries in grey
+  geom_sf(data = gu_boundaries_lines, color = "black", size = 1.5) +  # gu boundaries in thick black
+  scale_fill_manual(values = c("TRUE" = "lightcoral", "FALSE" = "lightblue"),  
+                    labels = c("Above Threshold", "Below Threshold")) +  # Ensure red on the left
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    plot.background = element_rect(fill = "white", color = NA)
+  ) +
+  guides(fill = guide_legend(nrow = 1, byrow = TRUE, title = NULL))
+
+ggsave(filename = "../unique_month_result/Strength_map202202.png",  plot = strength_map, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+seoul_map_11 <- seoul_map_11 %>% mutate(Mobility = (strength / sum(strength)) * 2)
+
+
+# Merge centrality data with map data
+seoul_map_11 <- seoul_map_11 %>%
+  left_join(centrality, by = c("code" = "name"))
+seoul_map_11 <- seoul_map_11 %>%
+  left_join(
+    nodes %>% 
+      mutate(node = as.character(node)) %>%  # 把 node 转字符
+      select(node, gu, dong),
+    by = c("code" = "node")
+  )
+
+
+top_10 <- seoul_map_11 %>% 
+  arrange(desc(wpr)) %>% 
+  slice_head(n = 10) %>% 
+  mutate(rank = row_number()) %>% 
+  dplyr::select(rank, dong, strength, gu = gu.y, Mobility)
+
+
+bottom_10 <- seoul_map_11 %>% 
+  arrange(wpr) %>% 
+  slice_head(n = 10) %>% 
+  mutate(rank = row_number()) %>% 
+  dplyr::select(rank, dong, strength, gu = gu.y, Mobility)
+
+write_xlsx(top_10, "../unique_month_result/Top10wpr202202.xlsx")
+write_xlsx(bottom_10, "../unique_month_result/Bottom10wpr202202.xlsx")
+```
+
+```{r}
+result202001 <- readRDS("/Users/huzeyu/Desktop/UConnHealth/SeoulMobilityNetwork/result/monthly/community_result/community_membership_202001.rds")
+result202002 <- readRDS("/Users/huzeyu/Desktop/UConnHealth/SeoulMobilityNetwork/result/monthly/community_result/community_membership_202002.rds")
+result202101 <- readRDS("/Users/huzeyu/Desktop/UConnHealth/SeoulMobilityNetwork/result/monthly/community_result/community_membership_202101.rds")
+result202102 <- readRDS("/Users/huzeyu/Desktop/UConnHealth/SeoulMobilityNetwork/result/monthly/community_result/community_membership_202102.rds")
+result202201 <- readRDS("/Users/huzeyu/Desktop/UConnHealth/SeoulMobilityNetwork/result/monthly/community_result/community_membership_202201.rds")
+result202202 <- readRDS("/Users/huzeyu/Desktop/UConnHealth/SeoulMobilityNetwork/result/monthly/community_result/community_membership_202202.rds")
+library(mclust)  # for adjustedRandIndex
+
+results <- list(
+  `202001` = result202001,
+  `202002` = result202002,
+  `202101` = result202101,
+  `202102` = result202102,
+  `202201` = result202201,
+  `202202` = result202202
+)
+
+n <- length(results)
+ari_mat <- matrix(NA, n, n, dimnames = list(names(results), names(results)))
+
+#  pairwise ARI
+for (i in 1:n) {
+  for (j in 1:n) {
+    ari_mat[i, j] <- adjustedRandIndex(results[[i]], results[[j]])
+  }
+}
+
+ari_mat
+```

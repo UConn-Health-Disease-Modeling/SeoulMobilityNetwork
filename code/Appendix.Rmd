@@ -15,7 +15,7 @@ library(geojsonio)
 ## Appendix Figrue S2
 ```{r echo=FALSE}
 data_dir <- "../data/"
-years <- 2022:2022
+years <- 2020:2022
 file_list <- paste0(data_dir, "network_", years, ".csv")
 
 seoul_map <- geojson_read("../data/skorea-submunicipalities-2018-topo.json", what = "sp")
@@ -26,6 +26,16 @@ gu_boundaries <- seoul_map_11 %>%
   summarise(geometry = st_union(geometry))
 gu_boundaries_lines <- st_cast(gu_boundaries, "MULTILINESTRING")
 
+# community_colors_2022 <- c(
+#   "1" = "#d35f00", "2" = "#fd7c1a", "3" = "#fcff07", "4" = "#fe9376",
+#   "5" = "#ffbd15", "6" = "#1d9bf7", "7" = "#f3dee0", "8" = "#303cf9",
+#   "9" = "#603c87", "10" = "#b4403e", "11" = "#a0c9e5", "12" = "black"
+# )
+# community_colors_2021 <- c(
+#   "1" = "#d35f00", "2" = "#fd7c1a", "3" = "#fcff07", "4" = "#fe9376",
+#   "5" = "#1d9bf7", "6" = "#ffbd15", "7" = "#f3dee0", "8" = "#303cf9",
+#   "9" = "#603c87", "10" = "#b4403e", "11" = "#a0c9e5", "12" = "black"
+# )
 
 community_colors <- c(
   "1" = "#d35f00", "2" = "#fd7c1a", "3" = "#fcff07", "4" = "#fe9376",
@@ -40,7 +50,7 @@ for (i in seq_along(years)) {
   g <- graph_from_data_frame(df, directed = TRUE)
   
   # Infomap 
-  infomap_community <- cluster_infomap(g)
+  infomap_community <- cluster_infomap(g, nb.trials = 100)
   community_membership <- membership(infomap_community)
   
   # reorder community by number of dongs
@@ -74,11 +84,11 @@ for (i in seq_along(years)) {
     ) +
     guides(fill = guide_legend(nrow = 2, byrow = TRUE))
   
-  # ggsave(
-  #   filename = paste0("../result/Figure S2. ", year, ".png"),
-  #   plot = community_map,
-  #   width = 8, height = 6, dpi = 300, bg = "white"
-  # )
+  ggsave(
+    filename = paste0("../result/Figure S2. ", year, ".png"),
+    plot = community_map,
+    width = 8, height = 6, dpi = 300, bg = "white"
+  )
 }
 ```
 
